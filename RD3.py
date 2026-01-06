@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 """
-This script provides the TD3 Reinforcement Learning algorithm from the paper
-"Addressing Function Approximation Error in Actor-Critic Methods"
+This script provides the RD3 Reinforcement Learning algorithm from the paper
+"Controlling estimation error in reinforcement learning via Reinforced Operation"
 """
 
 import copy
@@ -63,12 +63,36 @@ class Critic(nn.Module):
             nn.Linear(512, 1),
         )
 
+        self.q3 = nn.Sequential(
+            nn.Linear(state_dim + action_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 1),
+        )
+
+        self.q4 = nn.Sequential(
+            nn.Linear(state_dim + action_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 1),
+        )
+
+        self.q5 = nn.Sequential(
+            nn.Linear(state_dim + action_dim, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 1),
+        )
+
     def forward(self, state, action):
         # Concatenate the state and action inputs into a single tensor
         sa = torch.cat([state, action], 1)
 
         # Pass the converted input through all of the critic networks and return the values
-        return self.q1(sa), self.q2(sa)
+        return self.q1(sa), self.q2(sa), self.q3(sa), self.q4(sa), self.q5(sa)
 
     def Q1(self, state, action):
         # Concatenate the state and action inputs into a single tensor
@@ -124,17 +148,33 @@ class TD3(object):
             next_action = (self.actor_target(next_state) + noise).clamp(-self.max_action, self.max_action)
 
             # Get the Q values from the critic target networks
-            target_Q1, target_Q2 = self.critic_target(next_state, next_action)
+            target_Q1, target_Q2, target_Q3, target_Q4, target_Q5 = self.critic_target(next_state, next_action)
 
-            # Calculate the target Q value by finding the minimum Q value, adding the reward, and discounting
-            target_Q = torch.min(target_Q1, target_Q2)
-            target_Q = reward + not_done * self.discount * target_Q
+            # Concatenate the tensors along a new dimension, then remove extra dimension, necessary for sorting
+            # (batch_size, 1) -> (batch_size, 5, 1) -> (batch_size, 5)
+            target_Qs = torch.stack([target_Q1, target_Q2, target_Q3, target_Q4, target_Q5], dim=1).squeeze(-1)
+
+            # Sort the tensors in ascending order
+            Qs_sorted, _ = torch.sort(target_Qs, dim=1)
+
+            # Calculate the quasi-median by averaging the 2nd and 3rd smallest Q-values, then restore 2D shape
+            # (batch_size, 5) -> (batch_size,) -> (batch_size, 1)
+            q_RO = (0.5 * (Qs_sorted[:, 1] + Qs_sorted[:, 2])).unsqueeze(1)
+
+            # Get the target Q value using the reward and "reinforced" Q value
+            target_Q = reward + not_done * self.discount * q_RO
 
         # Get the current Q estimates from both critics
-        current_Q1, current_Q2 = self.critic(state, action)
+        current_Q1, current_Q2, current_Q3, current_Q4, current_Q5 = self.critic(state, action)
 
         # Compute the mean squared error loss for both critics, takes tensors and computes scalar
-        critic_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q)
+        critic_loss = (
+            F.mse_loss(current_Q1, target_Q)
+            + F.mse_loss(current_Q2, target_Q)
+            + F.mse_loss(current_Q3, target_Q)
+            + F.mse_loss(current_Q4, target_Q)
+            + F.mse_loss(current_Q5, target_Q)
+        )
 
         # Optimize the critics
         self.critic_optimizer.zero_grad()  # Clear old gradients
