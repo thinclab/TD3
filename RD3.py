@@ -7,6 +7,7 @@ This script provides the RD3 Reinforcement Learning algorithm from the paper
 
 import copy
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -102,9 +103,18 @@ class Critic(nn.Module):
         return self.q1(sa)
 
 
-class TD3(object):
+class RD3(object):
     def __init__(
-        self, state_dim, action_dim, max_action, discount=0.99, tau=0.005, policy_noise=0.2, noise_clip=0.5, policy_freq=2
+        self,
+        state_dim,
+        action_dim,
+        max_action,
+        discount=0.99,
+        tau=0.005,
+        expl_noise=0.1,
+        policy_noise=0.2,
+        noise_clip=0.5,
+        policy_freq=2,
     ):
         # Define NN for actor and copy it for target network, then define optimizer
         self.actor = Actor(state_dim, action_dim, max_action).to(device)
@@ -117,9 +127,11 @@ class TD3(object):
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=3e-4)
 
         # Define global variables
+        self.action_dim = action_dim  # Dimension size of action
         self.max_action = max_action  # Maximum continuous action value
         self.discount = discount  # Multiplication coefficient in update to discount future rewards
         self.tau = tau  # Ratio of current network to update target network with (stability)
+        self.expl_noise = expl_noise  # Amount of noise to add to action selection during exploration
         self.policy_noise = policy_noise  # Amount of noise to add to action selection
         self.noise_clip = noise_clip  # Maximum noise to add
         self.policy_freq = policy_freq  # How often to update policy
@@ -131,6 +143,15 @@ class TD3(object):
 
         # Pass the state through the actor network to get the action and return the value
         return self.actor(state).cpu().data.numpy().flatten()
+
+    def select_noisy_action(self, state):
+        # Convert the state to a row vector tensor and then add it to the GPU
+        state = torch.FloatTensor(state.reshape(1, -1)).to(device)
+
+        # Pass the state through the actor network, add noise for exploration, and return the value
+        return (
+            self.select_action(np.array(state)) + np.random.normal(0, self.max_action * self.expl_noise, size=self.action_dim)
+        ).clip(-self.max_action, self.max_action)
 
     def train(self, replay_buffer, batch_size=256):
         # Increment the iteration tracking variable
