@@ -136,22 +136,27 @@ class RD3(object):
         self.noise_clip = noise_clip  # Maximum noise to add
         self.policy_freq = policy_freq  # How often to update policy
         self.total_it = 0  # Tracking variable for number of iterations
+        self.prev_rewards = []  # Tracking variable for previous rewards
 
-    def select_action(self, state):
+    def select_action(self, state, add_noise=False):
         # Convert the state to a row vector tensor and then add it to the GPU
-        state = torch.FloatTensor(state.reshape(1, -1)).to(device)
+        state = torch.FloatTensor(np.array(state).reshape(1, -1)).to(device)
 
-        # Pass the state through the actor network to get the action and return the value
-        return self.actor(state).cpu().data.numpy().flatten()
+        # Pass the state through the actor network to get the action
+        action = self.actor(state)
 
-    def select_noisy_action(self, state):
-        # Convert the state to a row vector tensor and then add it to the GPU
-        state = torch.FloatTensor(state.reshape(1, -1)).to(device)
+        # If the "add_noise" flag is set to True
+        if add_noise:
+            # Get random noise based on Gaussian with 0 mean and "expl_noise" variance with action size
+            noise = (torch.randn_like(action) * self.expl_noise).clamp(-self.noise_clip, self.noise_clip)
 
-        # Pass the state through the actor network, add noise for exploration, and return the value
-        return (
-            self.select_action(np.array(state)) + np.random.normal(0, self.max_action * self.expl_noise, size=self.action_dim)
-        ).clip(-self.max_action, self.max_action)
+            # Add the noise to the action
+            action = action + noise
+
+        # Clamp final action to valid bounds
+        action = action.clamp(-self.max_action, self.max_action)
+
+        return action.cpu().detach().numpy().flatten()
 
     def train(self, replay_buffer, batch_size=256):
         # Increment the iteration tracking variable
@@ -226,6 +231,9 @@ class RD3(object):
         torch.save(self.actor.state_dict(), filename + "_actor")
         torch.save(self.actor_optimizer.state_dict(), filename + "_actor_optimizer")
 
+        np.save(filename + "_total_it.npy", self.total_it)
+        np.save(filename + "_prev_rewards.npy", self.prev_rewards)
+
     def load(self, filename):
         self.critic.load_state_dict(torch.load(filename + "_critic"))
         self.critic_optimizer.load_state_dict(torch.load(filename + "_critic_optimizer"))
@@ -234,3 +242,24 @@ class RD3(object):
         self.actor.load_state_dict(torch.load(filename + "_actor"))
         self.actor_optimizer.load_state_dict(torch.load(filename + "_actor_optimizer"))
         self.actor_target = copy.deepcopy(self.actor)
+
+        self.total_it = int(np.load(filename + "_total_it.npy"))
+        self.prev_rewards = np.load(filename + "_prev_rewards.npy").tolist()
+
+    def evaluate_policy(self, reward):
+        # Add the most recent reward to the list of previous rewards
+        self.prev_rewards.append(reward)
+
+        # If there are more than 20 previous rewards
+        if len(self.prev_rewards) >= 20:
+            # Remove the oldest reward
+            self.prev_rewards.pop(0)
+
+            # Calculate the average reward over the last 20 rewards
+            avg_reward = sum(self.prev_rewards) / 20
+
+        # Otherwise, the reward average is 0
+        else:
+            avg_reward = 0
+
+        return avg_reward
