@@ -9,6 +9,7 @@ import copy
 import torch
 import numpy as np
 import torch.nn as nn
+from csv import writer
 import torch.nn.functional as F
 
 
@@ -246,17 +247,22 @@ class RD3(object):
         self.total_it = int(np.load(filename + "_total_it.npy"))
         self.prev_rewards = np.load(filename + "_prev_rewards.npy").tolist()
 
-    def evaluate_policy(self, reward):
+    def evaluate_policy(self, reward, filename):
         # Add the most recent reward to the list of previous rewards
         self.prev_rewards.append(reward)
 
         # If there are more than 20 previous rewards
         if len(self.prev_rewards) >= 20:
-            # Remove the oldest reward
-            self.prev_rewards.pop(0)
-
             # Calculate the average reward over the last 20 rewards
             avg_reward = sum(self.prev_rewards) / 20
+
+            # Append the average reward and current iteration to a CSV file
+            with open(filename + "_average_rewards.csv", mode="a") as file:
+                write_file = writer(file)
+                write_file.writerow([f"{self.total_it}: {avg_reward}"])
+
+            # Remove the oldest reward
+            self.prev_rewards.pop(0)
 
         # Otherwise, the reward average is 0
         else:
