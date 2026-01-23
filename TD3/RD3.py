@@ -17,12 +17,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, max_action):
+    def __init__(self, state_dim, action_dim, min_action, max_action):
         # Initialize object with everything from parent class
         super(Actor, self).__init__()
 
-        # Define the maximum continuous value for an action
-        self.max_action = max_action
+        # Convert lists to tensors and register as buffers so torch.save() saves these values
+        self.register_buffer("min_action", torch.tensor(min_action))
+        self.register_buffer("max_action", torch.tensor(max_action))
 
         # Define the structure of the actor network
         # state dimension input -> 512 features, 512 features -> 512 features, 512 features -> action dimension output
@@ -35,12 +36,8 @@ class Actor(nn.Module):
         )
 
     def forward(self, x):
-        # (JK) Decide on which implementation to use
-        # # Pass the input through the actor network and return the output
-        # return self.actor(x)
-
-        # Pass input through network, restrict between [-1,1], then multiply by max_action to transform output
-        return self.max_action * torch.tanh(self.actor(x))
+        # Pass input through network and restrict between min and max action values
+        return self.min_action + (torch.tanh(self.actor(x)) + 1.0) * 0.5 * (self.max_action - self.min_action)
 
 
 class Critic(nn.Module):
@@ -109,6 +106,7 @@ class RD3(object):
         self,
         state_dim,
         action_dim,
+        min_action,
         max_action,
         discount=0.99,
         tau=0.005,
@@ -118,7 +116,7 @@ class RD3(object):
         policy_freq=2,
     ):
         # Define NN for actor and copy it for target network, then define optimizer
-        self.actor = Actor(state_dim, action_dim, max_action).to(device)
+        self.actor = Actor(state_dim, action_dim, min_action, max_action).to(device)
         self.actor_target = copy.deepcopy(self.actor)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=3e-4)
 
@@ -129,7 +127,8 @@ class RD3(object):
 
         # Define global variables
         self.action_dim = action_dim  # Dimension size of action
-        self.max_action = max_action  # Maximum continuous action value
+        self.min_action = self.actor.min_action  # Array of corresponding minimum continuous action values
+        self.max_action = self.actor.max_action  # Array of corresponding maximum continuous action value
         self.discount = discount  # Multiplication coefficient in update to discount future rewards
         self.tau = tau  # Ratio of current network to update target network with (stability)
         self.expl_noise = expl_noise  # Amount of noise to add to action selection during exploration
@@ -155,7 +154,7 @@ class RD3(object):
             action = action + noise
 
         # Clamp final action to valid bounds
-        action = action.clamp(-self.max_action, self.max_action)
+        action = action.clamp(self.min_action, self.max_action)
 
         return action.cpu().detach().numpy().flatten()
 
@@ -172,7 +171,7 @@ class RD3(object):
             noise = (torch.randn_like(action) * self.policy_noise).clamp(-self.noise_clip, self.noise_clip)
 
             # Add the noise to all of the sampled "next states", then get the target policy's action
-            next_action = (self.actor_target(next_state) + noise).clamp(-self.max_action, self.max_action)
+            next_action = (self.actor_target(next_state) + noise).clamp(self.min_action, self.max_action)
 
             # Get the Q values from the critic target networks
             target_Q1, target_Q2, target_Q3, target_Q4, target_Q5 = self.critic_target(next_state, next_action)
@@ -228,12 +227,18 @@ class RD3(object):
     def save(self, filename):
         torch.save(self.critic.state_dict(), filename + "_critic")
         torch.save(self.critic_optimizer.state_dict(), filename + "_critic_optimizer")
+        torch.save(self.critic.state_dict(), filename + "_critic_copy")
+        torch.save(self.critic_optimizer.state_dict(), filename + "_critic_optimizer_copy")
 
         torch.save(self.actor.state_dict(), filename + "_actor")
         torch.save(self.actor_optimizer.state_dict(), filename + "_actor_optimizer")
+        torch.save(self.actor.state_dict(), filename + "_actor_copy")
+        torch.save(self.actor_optimizer.state_dict(), filename + "_actor_optimizer_copy")
 
         np.save(filename + "_total_it.npy", self.total_it)
         np.save(filename + "_prev_rewards.npy", self.prev_rewards)
+        np.save(filename + "_total_it_copy.npy", self.total_it)
+        np.save(filename + "_prev_rewards_copy.npy", self.prev_rewards)
 
     def load(self, filename):
         self.critic.load_state_dict(torch.load(filename + "_critic"))
