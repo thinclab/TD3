@@ -26,6 +26,16 @@ class ReplayBuffer(object):
         self.ptr = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
 
+    def remove_last(self):
+        self.ptr -= 1
+        self.size -= 1
+
+        self.state[self.ptr] = np.zeros(self.state[0].shape)
+        self.action[self.ptr] = np.zeros(self.action[0].shape)
+        self.next_state[self.ptr] = np.zeros(self.next_state[0].shape)
+        self.reward[self.ptr] = [0]
+        self.not_done[self.ptr] = [0]
+
     def sample(self, batch_size):
         ind = np.random.randint(0, self.size, size=batch_size)
 
